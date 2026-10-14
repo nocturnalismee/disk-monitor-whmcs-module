@@ -17,9 +17,15 @@ class WhmClient {
     public function request(string $fn, array $params = []): array {
         $url = $this->host . ':2087/json-api/' . $fn . '?api.version=1&' . http_build_query($params);
         $ch = curl_init($url);
+        if ($ch === false) {
+            throw new \RuntimeException('WHM request failed (' . $fn . '): curl_init failed');
+        }
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT => $this->timeout,
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
             CURLOPT_HTTPHEADER => ['Authorization: whm ' . $this->user . ':' . $this->token],
         ]);
         $body = curl_exec($ch);

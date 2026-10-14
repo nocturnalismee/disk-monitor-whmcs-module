@@ -46,17 +46,137 @@ function diskmonitor_validate_settings(array $raw) {
 }
 
 function diskmonitor_activate() {
-    $pdo = new PDO('mysql:host=' . $_SERVER['DB_HOST'] . ';dbname=' . $_SERVER['DB_NAME'], $_SERVER['DB_USER'], $_SERVER['DB_PASS']);
-    // NOTE: di WHMCS asli gunakan Capsule::schema(); PDO di sini agar testable standalone.
-    // Executor: ganti body dengan Capsule saat deploy (lihat Task 6), SQL di bawah tetap sama.
-    $pdo->exec("CREATE TABLE IF NOT EXISTS mod_diskmonitor_cache (server_id INT NOT NULL, user VARCHAR(64) NOT NULL, domain VARCHAR(255) NOT NULL DEFAULT '', diskused_mb DECIMAL(12,2) NOT NULL DEFAULT 0, quota_mb DECIMAL(12,2) NOT NULL DEFAULT 0, pct DECIMAL(5,1) NOT NULL DEFAULT 0, unlimited TINYINT(1) NOT NULL DEFAULT 0, source ENUM('api','agent') NOT NULL DEFAULT 'api', updated_at DATETIME NOT NULL, PRIMARY KEY (server_id, user), KEY idx_pct (pct))");
-    $pdo->exec("CREATE TABLE IF NOT EXISTS mod_diskmonitor_events (id INT AUTO_INCREMENT PRIMARY KEY, server_id INT NOT NULL, user VARCHAR(64) NOT NULL, domain VARCHAR(255) NOT NULL DEFAULT '', level ENUM('warning','critical') NOT NULL, status ENUM('open','resolved','unmapped') NOT NULL DEFAULT 'open', first_seen DATETIME NOT NULL, last_seen DATETIME NOT NULL, last_sent_at DATETIME NULL, send_count INT NOT NULL DEFAULT 0, resolved_at DATETIME NULL, KEY idx_open (status, server_id))");
-    $pdo->exec("CREATE TABLE IF NOT EXISTS mod_diskmonitor_log (id INT AUTO_INCREMENT PRIMARY KEY, event_id INT NULL, server_id INT NOT NULL, user VARCHAR(64) NOT NULL, email_to VARCHAR(255) NOT NULL DEFAULT '', template VARCHAR(128) NOT NULL DEFAULT '', result ENUM('sent','skipped_cooldown','failed','unmapped') NOT NULL, message TEXT NULL, created_at DATETIME NOT NULL, KEY idx_event (event_id))");
+    $schema = \WHMCS\Database\Capsule::schema();
+    if (!$schema->hasTable('mod_diskmonitor_cache')) {
+        $schema->create('mod_diskmonitor_cache', function ($t) {
+            $t->integer('server_id');
+            $t->string('user', 64);
+            $t->string('domain', 255)->default('');
+            $t->decimal('diskused_mb', 12, 2)->default(0);
+            $t->decimal('quota_mb', 12, 2)->default(0);
+            $t->decimal('pct', 5, 1)->default(0);
+            $t->boolean('unlimited')->default(false);
+            $t->enum('source', ['api', 'agent'])->default('api');
+            $t->dateTime('updated_at');
+            $t->primary(['server_id', 'user']);
+            $t->index('pct');
+        });
+    }
+    if (!$schema->hasTable('mod_diskmonitor_events')) {
+        $schema->create('mod_diskmonitor_events', function ($t) {
+            $t->increments('id');
+            $t->integer('server_id');
+            $t->string('user', 64);
+            $t->string('domain', 255)->default('');
+            $t->enum('level', ['warning', 'critical']);
+            $t->enum('status', ['open', 'resolved', 'unmapped'])->default('open');
+            $t->dateTime('first_seen');
+            $t->dateTime('last_seen');
+            $t->dateTime('last_sent_at')->nullable();
+            $t->integer('send_count')->default(0);
+            $t->dateTime('resolved_at')->nullable();
+            $t->index(['status', 'server_id']);
+        });
+    }
+    if (!$schema->hasTable('mod_diskmonitor_log')) {
+        $schema->create('mod_diskmonitor_log', function ($t) {
+            $t->increments('id');
+            $t->integer('event_id')->nullable();
+            $t->integer('server_id');
+            $t->string('user', 64);
+            $t->string('email_to', 255)->default('');
+            $t->string('template', 128)->default('');
+            $t->enum('result', ['sent', 'skipped_cooldown', 'failed', 'unmapped']);
+            $t->text('message')->nullable();
+            $t->dateTime('created_at');
+            $t->index('event_id');
+        });
+    }
+    foreach (['mod_diskmonitor_cache', 'mod_diskmonitor_events', 'mod_diskmonitor_log'] as $table) {
+        if (!$schema->hasTable($table)) {
+            throw new \Exception('Aktivasi gagal: tabel ' . $table . ' tidak terbentuk.');
+        }
+    }
+    $hasTemplate = \WHMCS\Database\Capsule::table('tblemailtemplates')->where('name', 'Disk Usage Warning')->exists();
+    if (!$hasTemplate) {
+        throw new \Exception('Buat dulu Email Template "Disk Usage Warning" di Setup > Email Templates sebelum aktivasi.');
+    }
+    $key = \WHMCS\Database\Capsule::table('tbladdonmodules')->where('module', 'diskmonitor')->where('setting', 'agent_key_global')->value('value');
+    if (!$key) {
+        \WHMCS\Database\Capsule::table('tbladdonmodules')->insert(['module' => 'diskmonitor', 'setting' => 'agent_key_global', 'value' => bin2hex(random_bytes(16))]);
+    }
+    return ['status' => 'success', 'description' => 'Tabel dibuat. Tambahkan sys cron 15 menit (lihat README).'];
 }
 
 function diskmonitor_deactivate() {
 }
 
 function diskmonitor_output($vars) {
-    echo '<h2>Disk Monitor</h2><p>Modul aktif. Halaman overview dibangun di Task 6.</p>';
+    $modulelink = isset($vars['modulelink']) ? $vars['modulelink'] : 'addonmodules.php?module=diskmonitor';
+    $title = isset($vars['_lang']['title']) ? $vars['_lang']['title'] : 'Disk Monitor';
+    $checknow = isset($vars['_lang']['checknow']) ? $vars['_lang']['checknow'] : 'Check Now';
+
+    $notice = '';
+    if (isset($_GET['action']) && $_GET['action'] === 'checknow') {
+        foreach (['lib/Rules.php', 'lib/QuotaParser.php', 'lib/WhmClient.php', 'lib/Collector.php', 'lib/Resolver.php', 'lib/Notifier.php', 'lib/Runner.php', 'lib/DbAdapter.php'] as $f) {
+            require_once __DIR__ . '/' . $f;
+        }
+        try {
+            $settings = diskmonitor_validate_settings([
+                'warn_pct' => \WHMCS\Database\Capsule::table('tbladdonmodules')->where('module', 'diskmonitor')->where('setting', 'warn_pct')->value('value'),
+                'crit_pct' => \WHMCS\Database\Capsule::table('tbladdonmodules')->where('module', 'diskmonitor')->where('setting', 'crit_pct')->value('value'),
+                'cooldown_h' => \WHMCS\Database\Capsule::table('tbladdonmodules')->where('module', 'diskmonitor')->where('setting', 'cooldown_h')->value('value'),
+                'resolve_below' => \WHMCS\Database\Capsule::table('tbladdonmodules')->where('module', 'diskmonitor')->where('setting', 'resolve_below')->value('value'),
+                'email_template' => \WHMCS\Database\Capsule::table('tbladdonmodules')->where('module', 'diskmonitor')->where('setting', 'email_template')->value('value'),
+            ]);
+            $now = date('Y-m-d H:i:s');
+            $summary = \DiskMonitor\Runner::runCheck(new \DiskMonitor\DbAdapter(), function ($userid, $template, $emailVars) {
+                $r = localAPI('SendEmail', ['messagename' => $template, 'id' => $userid, 'customvars' => $emailVars], 'admin');
+                return isset($r['result']) && $r['result'] === 'success';
+            }, function ($server) {
+                $host = 'https://' . (!empty($server['hostname']) ? $server['hostname'] : $server['ipaddress']);
+                return new \DiskMonitor\WhmClient($host, (string) $server['username'], (string) $server['accesshash']);
+            }, $settings, $now);
+            $notice = '<div class="successbox">OK: ' . (int) $summary['servers_ok'] . ' | Gagal: ' . (int) $summary['servers_failed'] . ' | Email: ' . (int) $summary['emails_sent'] . '</div>';
+        } catch (\Throwable $e) {
+            $notice = '<div class="errorbox">Check gagal: ' . htmlspecialchars(substr($e->getMessage(), 0, 300)) . '</div>';
+        }
+    }
+
+    $events = \WHMCS\Database\Capsule::table('mod_diskmonitor_events as e')
+        ->leftJoin('mod_diskmonitor_cache as c', function ($j) {
+            $j->on('c.server_id', '=', 'e.server_id')->on('c.user', '=', 'e.user');
+        })
+        ->whereIn('e.status', ['open', 'unmapped'])
+        ->orderBy('e.id', 'desc')->limit(50)
+        ->select(['e.server_id', 'e.user', 'e.domain', 'c.pct', 'e.level', 'e.status', 'e.last_sent_at'])
+        ->get()->map(function ($r) {
+            return (array) $r;
+        })->all();
+    $sent24 = \WHMCS\Database\Capsule::table('mod_diskmonitor_log')
+        ->where('result', 'sent')
+        ->where('created_at', '>=', date('Y-m-d H:i:s', strtotime('-24 hours')))
+        ->count();
+    $summary = ['servers_ok' => 0, 'servers_failed' => 0, 'emails_sent' => (int) $sent24];
+
+    if (isset($GLOBALS['smarty']) && is_object($GLOBALS['smarty']) && method_exists($GLOBALS['smarty'], 'assign')) {
+        $smarty = $GLOBALS['smarty'];
+        $smarty->assign('title', $title);
+        $smarty->assign('checknow', $checknow);
+        $smarty->assign('modulelink', $modulelink);
+        $smarty->assign('notice', $notice);
+        $smarty->assign('events', $events);
+        $smarty->assign('summary', $summary);
+        $smarty->display(__DIR__ . '/templates/overview.tpl');
+        return;
+    }
+    echo $notice;
+    echo '<h2>' . htmlspecialchars($title) . '</h2>';
+    echo '<p><a href="' . htmlspecialchars($modulelink) . '&action=checknow" class="btn btn-primary">' . htmlspecialchars($checknow) . '</a></p>';
+    echo '<p>Server OK: ' . (int) $summary['servers_ok'] . ' | Gagal: ' . (int) $summary['servers_failed'] . ' | Email 24 jam: ' . (int) $summary['emails_sent'] . '</p>';
+    echo '<table class="datatable" width="100%"><tr><th>Server</th><th>User</th><th>Domain</th><th>%</th><th>Level</th><th>Status</th><th>Terakhir kirim</th></tr>';
+    foreach ($events as $e) {
+        echo '<tr><td>' . htmlspecialchars((string) $e['server_id']) . '</td><td>' . htmlspecialchars((string) $e['user']) . '</td><td>' . htmlspecialchars((string) $e['domain']) . '</td><td>' . htmlspecialchars((string) ($e['pct'] ?? '')) . '</td><td>' . htmlspecialchars((string) $e['level']) . '</td><td>' . htmlspecialchars((string) $e['status']) . '</td><td>' . htmlspecialchars((string) ($e['last_sent_at'] ?? '')) . '</td></tr>';
+    }
+    echo '</table>';
 }
