@@ -213,7 +213,7 @@ Validasi: `0 < warn < crit ≤ 100`, `cooldown 1–168 jam`. Nilai invalid → f
 
 ## 9. Integrasi WHM/cPanel API
 
-- **Kredensial**: baca dari `tblservers` (`hostname/ip, username, password atau accesshash`). Prioritas token API (`accesshash` berisi token). Tidak menyimpan kredensial baru di modul.
+- **Kredensial**: TIDAK perlu token baru. Baca langsung dari `tblservers` (`hostname/ip, username, accesshash`) yang sudah diisi saat admin menambahkan server di Setup → Servers. Prioritas token API jika `accesshash` berisi token. Modul tidak menyimpan kredensial baru dan tidak meminta admin input ulang kredensial WHM.
 - **Endpoint**:
   - `GET /json-api/listaccts?api.version=1` → daftar `user, domain, diskused, disklimit` (satuan MB, string seperti `"512M"` — parser harus tangani `M/G/K` + `unlimited`).
   - Fallback per akun jika field kosong: `GET /json-api/accountsummary?api.version=1&user=<user>` → `acct.diskused, disklimit`.
