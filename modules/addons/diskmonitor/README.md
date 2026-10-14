@@ -29,12 +29,12 @@ PHP 7.4-compatible. Threshold default: warning ≥85%, critical ≥95%, cooldown
 ```
 
 Ganti `/var/www/whmcs` dengan path WHMCS Anda dan `AGENT_KEY_GLOBAL_ANDA` dengan key dari langkah 3.
-Cek manual: jalankan perintah di atas sekali via SSH, harus mencetak JSON `{"servers_ok":..,"servers_failed":..,"emails_sent":..,"events_open":..}`.
+Cek manual: jalankan perintah di atas sekali via SSH, harus mencetak JSON `{"servers_ok":..,"servers_failed":..,"emails_sent":..,"events_open":..}` (`events_open` = event berstatus open yang diproses run ini, termasuk yang baru dibuka).
 Halaman admin (**Addons > Disk Monitor**) juga punya tombol **Check Now** untuk run manual + **overview** 50 event terbuka (open/unmapped) dan hitungan email 24 jam terakhir.
 
-> Format host WHM: `WhmClient` menambahkan `:2087/json-api/` sendiri ke host server.
-> Isi **Hostname/IP server** di WHMCS (tblservers) sebagai bare `scheme://hostname`, contoh `https://s1.contoh.com` —
-> JANGAN sertakan port `:2087` atau path `/json-api/` (akan dobel dan request gagal).
+> Format host WHM: isi **Hostname/IP server** di WHMCS (tblservers) sebagai bare hostname, contoh `s1.contoh.com` —
+> JANGAN sertakan scheme (`https://`), port (`:2087`), atau path (`/json-api/`).
+> `WhmClient` membersihkan input defensif (strip scheme/port/path) lalu menambahkan `https://` + `:2087/json-api/` sendiri.
 
 ## 5. Agen cPanel (opsional, per server cPanel)
 
@@ -52,6 +52,10 @@ Untuk server yang tidak bisa dijangkau WHM API, deploy agen push:
 ```
 
 Agen hanya mengirim akun yang berubah ≥1% sejak run terakhir (state di `/root/.diskmonitor-state.json`); state ditulis hanya bila ingest balas HTTP 2xx. Payload: `{server_key, hostname, accounts:[{user, domain, diskused_mb, quota_mb, pct}]}` → ingest balas `{ok:true, accepted:N}`. Butuh `repquota`, `uapi`, dan ekstensi PHP `curl`.
+
+**Presedensi cache agen:** bila tabel `mod_diskmonitor_cache` berisi baris `source='agent'` yang segar (umur <10 menit) untuk suatu server, `Runner` memakai baris tersebut dan MELEWATI polling WHM API untuk server itu. Cache basi (>10 menit) → fallback ke polling WHM normal.
+
+**Throttle ingest:** `ingest.php` dibatasi 1 request/menit per kombinasi IP+hostname (file-based di `sys_get_temp_dir()`, balas HTTP 429 `too many requests` bila berlebih). Agen push tiap 5 menit tidak terdampak; volley/DoS teredam.
 
 ## 6. Troubleshooting
 

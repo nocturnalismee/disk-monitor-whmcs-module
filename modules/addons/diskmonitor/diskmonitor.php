@@ -115,9 +115,16 @@ function diskmonitor_output($vars) {
     $modulelink = isset($vars['modulelink']) ? $vars['modulelink'] : 'addonmodules.php?module=diskmonitor';
     $title = isset($vars['_lang']['title']) ? $vars['_lang']['title'] : 'Disk Monitor';
     $checknow = isset($vars['_lang']['checknow']) ? $vars['_lang']['checknow'] : 'Check Now';
+    $sendtest = isset($vars['_lang']['sendtest']) ? $vars['_lang']['sendtest'] : 'Send Test';
+    $tokenQs = function_exists('generate_token') ? generate_token('link') : '';
 
     $notice = '';
-    if (isset($_GET['action']) && $_GET['action'] === 'checknow') {
+    $runSummary = null;
+    $action = isset($_REQUEST['action']) ? (string) $_REQUEST['action'] : '';
+    if ($action === 'checknow' || $action === 'sendtest') {
+        if (function_exists('check_token')) {
+            check_token();
+        }
         foreach (['lib/Rules.php', 'lib/QuotaParser.php', 'lib/WhmClient.php', 'lib/Collector.php', 'lib/Resolver.php', 'lib/Notifier.php', 'lib/Runner.php', 'lib/DbAdapter.php'] as $f) {
             require_once __DIR__ . '/' . $f;
         }
@@ -129,15 +136,37 @@ function diskmonitor_output($vars) {
                 'resolve_below' => \WHMCS\Database\Capsule::table('tbladdonmodules')->where('module', 'diskmonitor')->where('setting', 'resolve_below')->value('value'),
                 'email_template' => \WHMCS\Database\Capsule::table('tbladdonmodules')->where('module', 'diskmonitor')->where('setting', 'email_template')->value('value'),
             ]);
-            $now = date('Y-m-d H:i:s');
-            $summary = \DiskMonitor\Runner::runCheck(new \DiskMonitor\DbAdapter(), function ($userid, $template, $emailVars) {
-                $r = localAPI('SendEmail', ['messagename' => $template, 'id' => $userid, 'customvars' => $emailVars], 'admin');
-                return isset($r['result']) && $r['result'] === 'success';
-            }, function ($server) {
-                $host = 'https://' . (!empty($server['hostname']) ? $server['hostname'] : $server['ipaddress']);
-                return new \DiskMonitor\WhmClient($host, (string) $server['username'], (string) $server['accesshash']);
-            }, $settings, $now);
-            $notice = '<div class="successbox">OK: ' . (int) $summary['servers_ok'] . ' | Gagal: ' . (int) $summary['servers_failed'] . ' | Email: ' . (int) $summary['emails_sent'] . '</div>';
+            if ($action === 'sendtest') {
+                $adminEmail = '';
+                $adminId = isset($_SESSION['adminid']) ? (int) $_SESSION['adminid'] : 0;
+                if ($adminId > 0) {
+                    $adminEmail = (string) \WHMCS\Database\Capsule::table('tbladmins')->where('id', $adminId)->value('email');
+                }
+                if ($adminEmail === '') {
+                    $adminEmail = (string) \WHMCS\Database\Capsule::table('tblconfiguration')->where('setting', 'Email')->value('value');
+                }
+                $clientId = (int) \WHMCS\Database\Capsule::table('tblclients')->orderBy('id', 'asc')->value('id');
+                if ($adminEmail === '' || $clientId <= 0) {
+                    $notice = '<div class="errorbox">Send Test gagal: email admin atau data klien tidak ditemukan.</div>';
+                } else {
+                    $r = localAPI('SendEmail', ['messagename' => $settings['email_template'], 'id' => $clientId, 'email' => $adminEmail, 'customvars' => ['client_name' => 'Test', 'domain' => 'test.example.com', 'pct' => '85.0', 'diskused' => '850.0', 'quota' => '1000.0', 'cpanel_url' => 'https://test.example.com:2083']], 'admin');
+                    if (isset($r['result']) && $r['result'] === 'success') {
+                        $notice = '<div class="successbox">Test email terkirim ke ' . htmlspecialchars($adminEmail) . '.</div>';
+                    } else {
+                        $notice = '<div class="errorbox">Send Test gagal: ' . htmlspecialchars(substr((string) ($r['message'] ?? 'unknown error'), 0, 300)) . '</div>';
+                    }
+                }
+            } else {
+                $now = date('Y-m-d H:i:s');
+                $runSummary = \DiskMonitor\Runner::runCheck(new \DiskMonitor\DbAdapter(), function ($userid, $template, $emailVars) {
+                    $r = localAPI('SendEmail', ['messagename' => $template, 'id' => $userid, 'customvars' => $emailVars], 'admin');
+                    return isset($r['result']) && $r['result'] === 'success';
+                }, function ($server) {
+                    $host = 'https://' . (!empty($server['hostname']) ? $server['hostname'] : $server['ipaddress']);
+                    return new \DiskMonitor\WhmClient($host, (string) $server['username'], (string) $server['accesshash']);
+                }, $settings, $now);
+                $notice = '<div class="successbox">OK: ' . (int) $runSummary['servers_ok'] . ' | Gagal: ' . (int) $runSummary['servers_failed'] . ' | Email: ' . (int) $runSummary['emails_sent'] . ' | Open: ' . (int) $runSummary['events_open'] . '</div>';
+            }
         } catch (\Throwable $e) {
             $notice = '<div class="errorbox">Check gagal: ' . htmlspecialchars(substr($e->getMessage(), 0, 300)) . '</div>';
         }
@@ -157,13 +186,20 @@ function diskmonitor_output($vars) {
         ->where('result', 'sent')
         ->where('created_at', '>=', date('Y-m-d H:i:s', strtotime('-24 hours')))
         ->count();
-    $summary = ['servers_ok' => 0, 'servers_failed' => 0, 'emails_sent' => (int) $sent24];
+    if ($runSummary !== null) {
+        $runSummary['emails_sent_24h'] = (int) $sent24;
+        $summary = $runSummary;
+    } else {
+        $summary = ['servers_ok' => 0, 'servers_failed' => 0, 'emails_sent' => (int) $sent24, 'events_open' => 0, 'emails_sent_24h' => (int) $sent24];
+    }
 
     if (isset($GLOBALS['smarty']) && is_object($GLOBALS['smarty']) && method_exists($GLOBALS['smarty'], 'assign')) {
         $smarty = $GLOBALS['smarty'];
         $smarty->assign('title', $title);
         $smarty->assign('checknow', $checknow);
+        $smarty->assign('sendtest', $sendtest);
         $smarty->assign('modulelink', $modulelink);
+        $smarty->assign('token_qs', $tokenQs);
         $smarty->assign('notice', $notice);
         $smarty->assign('events', $events);
         $smarty->assign('summary', $summary);
@@ -172,7 +208,8 @@ function diskmonitor_output($vars) {
     }
     echo $notice;
     echo '<h2>' . htmlspecialchars($title) . '</h2>';
-    echo '<p><a href="' . htmlspecialchars($modulelink) . '&action=checknow" class="btn btn-primary">' . htmlspecialchars($checknow) . '</a></p>';
+    echo '<p><a href="' . htmlspecialchars($modulelink) . '&action=checknow' . htmlspecialchars($tokenQs) . '" class="btn btn-primary">' . htmlspecialchars($checknow) . '</a> ';
+    echo '<a href="' . htmlspecialchars($modulelink) . '&action=sendtest' . htmlspecialchars($tokenQs) . '" class="btn btn-default">' . htmlspecialchars($sendtest) . '</a></p>';
     echo '<p>Server OK: ' . (int) $summary['servers_ok'] . ' | Gagal: ' . (int) $summary['servers_failed'] . ' | Email 24 jam: ' . (int) $summary['emails_sent'] . '</p>';
     echo '<table class="datatable" width="100%"><tr><th>Server</th><th>User</th><th>Domain</th><th>%</th><th>Level</th><th>Status</th><th>Terakhir kirim</th></tr>';
     foreach ($events as $e) {

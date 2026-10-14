@@ -13,8 +13,27 @@ if (strlen((string) $raw) > 2 * 1024 * 1024) {
     exit(json_encode(['error' => 'payload too large']));
 }
 $in = json_decode((string) $raw, true);
+if (!is_array($in)) {
+    http_response_code(400);
+    exit(json_encode(['error' => 'bad request']));
+}
+$clientIp = (string) ($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+$throttleKey = md5($clientIp . '|' . (string) ($in['hostname'] ?? ''));
+$throttleFile = rtrim((string) sys_get_temp_dir(), '/\\') . '/diskmonitor-ingest-' . $throttleKey . '.json';
+$last = 0;
+if (is_file($throttleFile)) {
+    $prev = json_decode((string) @file_get_contents($throttleFile), true);
+    if (is_array($prev) && isset($prev['at'])) {
+        $last = (int) $prev['at'];
+    }
+}
+if (time() - $last < 60) {
+    http_response_code(429);
+    exit(json_encode(['error' => 'too many requests']));
+}
+@file_put_contents($throttleFile, json_encode(['at' => time()]), LOCK_EX);
 $expectKey = (string) Capsule::table('tbladdonmodules')->where('module', 'diskmonitor')->where('setting', 'agent_key_global')->value('value');
-if (!is_array($in) || $expectKey === '' || !hash_equals($expectKey, (string) ($in['server_key'] ?? ''))) {
+if ($expectKey === '' || !hash_equals($expectKey, (string) ($in['server_key'] ?? ''))) {
     http_response_code(403);
     exit(json_encode(['error' => 'forbidden']));
 }

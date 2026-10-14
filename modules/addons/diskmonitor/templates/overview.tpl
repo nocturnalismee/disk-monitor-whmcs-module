@@ -1,5 +1,8 @@
-<h2>{$title}</h2>
-<p>Server OK: {$summary.servers_ok} | Gagal: {$summary.servers_failed} | Email 24 jam: {$summary.emails_sent}</p>
+<h2>{$title|escape}</h2>
+{$notice nofilter}
+<p><a href="{$modulelink|escape}&action=checknow{$token_qs|escape}" class="btn btn-primary">{$checknow|escape}</a>
+<a href="{$modulelink|escape}&action=sendtest{$token_qs|escape}" class="btn btn-default">{$sendtest|escape}</a></p>
+<p>Server OK: {$summary.servers_ok|escape} | Gagal: {$summary.servers_failed|escape} | Email 24 jam: {$summary.emails_sent_24h|escape}{if isset($summary.events_open)} | Open: {$summary.events_open|escape}{/if}</p>
 <table class="datatable" width="100%">
 <tr><th>Server</th><th>User</th><th>Domain</th><th>%</th><th>Level</th><th>Status</th><th>Terakhir kirim</th></tr>
 {foreach from=$events item=e}

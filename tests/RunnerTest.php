@@ -12,6 +12,9 @@ final class FakeWhmClient extends WhmClient {
     public function listAccounts(): array {
         return $this->accts;
     }
+    public function accountSummary(string $user): array {
+        return [];
+    }
 }
 
 final class FakeDb {
@@ -20,6 +23,7 @@ final class FakeDb {
     public $cache = [];
     public $events = [];
     public $logs = [];
+    public $agentCache = [];
     private $nextId = 100;
 
     public function __construct(array $servers, array $hostingRows, array $events = []) {
@@ -43,6 +47,27 @@ final class FakeDb {
             }
         }
         return null;
+    }
+    public function findUnmappedEvent(int $serverId, string $user): ?array {
+        foreach ($this->events as $e) {
+            if ((int) $e['server_id'] === $serverId && (string) $e['user'] === $user && $e['status'] === 'unmapped') {
+                return $e;
+            }
+        }
+        return null;
+    }
+    public function getFreshAgentCache(int $serverId, string $now, int $maxAgeMin = 10): array {
+        $out = [];
+        foreach ($this->agentCache as $r) {
+            if ((int) ($r['server_id'] ?? 0) !== $serverId) {
+                continue;
+            }
+            if (strtotime($now) - strtotime((string) ($r['updated_at'] ?? $now)) > $maxAgeMin * 60) {
+                continue;
+            }
+            $out[] = $r;
+        }
+        return $out;
     }
     public function openEvent(int $serverId, string $user, string $domain, string $level, string $now): int {
         $id = $this->nextId++;
@@ -112,7 +137,7 @@ final class RunnerTest extends TestCase {
         $now = '2026-10-14 10:00:00';
 
         $summary = Runner::runCheck($db, $mailer, $factory, $settings, $now);
-        $this->assertSame(['servers_ok' => 1, 'servers_failed' => 1, 'emails_sent' => 2, 'events_open' => 0], $summary);
+        $this->assertSame(['servers_ok' => 1, 'servers_failed' => 1, 'emails_sent' => 2, 'events_open' => 3], $summary);
         $this->assertCount(2, $sent);
         $this->assertSame(11, $sent[0][0]);
         $this->assertSame(12, $sent[1][0]);
@@ -123,9 +148,60 @@ final class RunnerTest extends TestCase {
         $this->assertSame(['failed', 'sent', 'sent', 'unmapped'], $results);
 
         // Second run at same time: cooldown skips resend, no new mail.
+        $eventCountBefore = count($db->events);
         $summary2 = Runner::runCheck($db, $mailer, $factory, $settings, $now);
         $this->assertSame(0, $summary2['emails_sent']);
         $this->assertSame(1, $summary2['servers_ok']);
+        $this->assertSame(2, $summary2['events_open']);
         $this->assertCount(2, $sent);
+        // F3: no new event opened for the unmapped ghost account.
+        $this->assertCount($eventCountBefore, $db->events);
+        // F4: cooldown skip still touches last_seen/level.
+        foreach ($db->events as $e) {
+            if (in_array($e['user'], ['alice', 'bob'], true)) {
+                $this->assertSame($now, $e['last_seen']);
+            }
+        }
+    }
+
+    public function testAgentCacheShortCircuit(): void {
+        list($servers, $hosting, $events, $accounts) = $this->fixtures();
+        $db = new FakeDb([$servers[0]], $hosting, $events);
+        $db->agentCache[] = ['server_id' => 1, 'user' => 'alice', 'domain' => 'alice.com', 'diskused_mb' => 920.0, 'quota_mb' => 1000.0, 'pct' => 92.0, 'unlimited' => 0, 'updated_at' => '2026-10-14 09:55:00'];
+        $sent = [];
+        $mailer = function ($userid, $template, $vars) use (&$sent) {
+            $sent[] = [$userid, $template, $vars];
+            return true;
+        };
+        $polled = 0;
+        $factory = function ($server) use ($accounts, &$polled) {
+            $polled++;
+            return new FakeWhmClient($accounts);
+        };
+        $settings = ['warn_pct' => 85, 'crit_pct' => 95, 'cooldown_h' => 24, 'resolve_below' => 80, 'email_template' => 'Disk Usage Warning'];
+        $summary = Runner::runCheck($db, $mailer, $factory, $settings, '2026-10-14 10:00:00');
+        // Only the fresh agent row was processed (alice mailed once), WHM factory result unused for accounts.
+        $this->assertSame(1, $summary['servers_ok']);
+        $this->assertCount(1, $sent);
+        $this->assertSame(11, $sent[0][0]);
+        $this->assertSame(1, $summary['events_open']);
+    }
+
+    public function testStaleAgentCacheFallsBackToPoll(): void {
+        list($servers, $hosting, $events, $accounts) = $this->fixtures();
+        $db = new FakeDb([$servers[0]], $hosting, $events);
+        $db->agentCache[] = ['server_id' => 1, 'user' => 'alice', 'domain' => 'alice.com', 'diskused_mb' => 920.0, 'quota_mb' => 1000.0, 'pct' => 92.0, 'unlimited' => 0, 'updated_at' => '2026-10-14 09:00:00'];
+        $sent = [];
+        $mailer = function ($userid, $template, $vars) use (&$sent) {
+            $sent[] = [$userid, $template, $vars];
+            return true;
+        };
+        $factory = function ($server) use ($accounts) {
+            return new FakeWhmClient($accounts);
+        };
+        $settings = ['warn_pct' => 85, 'crit_pct' => 95, 'cooldown_h' => 24, 'resolve_below' => 80, 'email_template' => 'Disk Usage Warning'];
+        $summary = Runner::runCheck($db, $mailer, $factory, $settings, '2026-10-14 10:00:00');
+        $this->assertCount(2, $sent);
+        $this->assertSame(3, $summary['events_open']);
     }
 }

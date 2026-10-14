@@ -12,7 +12,7 @@ class Runner {
 
         foreach ($db->getServers() as $server) {
             try {
-                $accounts = Collector::pollServer($server, $whmFactory($server));
+                $accounts = self::collectAccounts($db, (int) $server['id'], $server, $whmFactory($server), $now);
                 $summary['servers_ok']++;
             } catch (\Throwable $e) {
                 $summary['servers_failed']++;
@@ -33,9 +33,20 @@ class Runner {
                     continue;
                 }
                 $event = $db->findOpenEvent((int) $server['id'], (string) $acct['user']);
+                if ($event !== null) {
+                    $summary['events_open']++;
+                }
                 $decision = Notifier::decide($event, $level, $cool, $now);
                 if ($event === null) {
+                    if (method_exists($db, 'findUnmappedEvent')) {
+                        $unmapped = $db->findUnmappedEvent((int) $server['id'], (string) $acct['user']);
+                        if ($unmapped !== null) {
+                            $db->updateEvent((int) $unmapped['id'], ['last_seen' => $now]);
+                            continue;
+                        }
+                    }
                     $eventId = $db->openEvent((int) $server['id'], (string) $acct['user'], (string) $acct['domain'], $level, $now);
+                    $summary['events_open']++;
                     $event = ['id' => $eventId, 'level' => $level, 'status' => 'open', 'last_sent_at' => null];
                     $decision = Notifier::decide(null, $level, $cool, $now);
                 }
@@ -43,6 +54,7 @@ class Runner {
                     continue;
                 }
                 if ($decision === 'skip_cooldown') {
+                    $db->updateEvent((int) $event['id'], ['level' => $level, 'last_seen' => $now]);
                     $db->insertLog(['event_id' => $event['id'] ?? null, 'server_id' => (int) $server['id'], 'user' => (string) $acct['user'], 'email_to' => '', 'template' => '', 'result' => 'skipped_cooldown', 'message' => $level, 'created_at' => $now]);
                     continue;
                 }
@@ -64,5 +76,39 @@ class Runner {
             }
         }
         return $summary;
+    }
+
+    private static function collectAccounts($db, int $serverId, array $server, WhmClient $client, string $now): array {
+        if (method_exists($db, 'getFreshAgentCache')) {
+            $rows = $db->getFreshAgentCache($serverId, $now);
+            if (!empty($rows)) {
+                $out = [];
+                foreach ($rows as $r) {
+                    $out[] = self::normalizeCacheRow($serverId, is_array($r) ? $r : []);
+                }
+                return $out;
+            }
+        }
+        return Collector::pollServer($server, $client);
+    }
+
+    private static function normalizeCacheRow(int $serverId, array $r): array {
+        $used = (float) ($r['diskused_mb'] ?? 0);
+        $quota = (float) ($r['quota_mb'] ?? 0);
+        $unlimited = !empty($r['unlimited']) || $quota <= 0;
+        $pct = null;
+        if (!$unlimited) {
+            $pct = isset($r['pct']) && (float) $r['pct'] > 0 ? (float) $r['pct'] : round($used / $quota * 100, 1);
+        }
+        return [
+            'user' => (string) ($r['user'] ?? ''),
+            'domain' => (string) ($r['domain'] ?? ''),
+            'diskused_mb' => $used,
+            'quota_mb' => $quota,
+            'pct' => $pct,
+            'unlimited' => $unlimited,
+            'over_quota' => !$unlimited && $used >= $quota,
+            'server_id' => $serverId,
+        ];
     }
 }

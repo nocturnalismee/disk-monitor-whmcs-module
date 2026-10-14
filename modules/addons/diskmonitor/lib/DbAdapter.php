@@ -31,6 +31,22 @@ class DbAdapter {
         return $r ? (array) $r : null;
     }
 
+    public function findUnmappedEvent(int $serverId, string $user): ?array {
+        $r = Capsule::table('mod_diskmonitor_events')->where('server_id', $serverId)->where('user', $user)->where('status', 'unmapped')->first();
+        return $r ? (array) $r : null;
+    }
+
+    public function getFreshAgentCache(int $serverId, string $now, int $maxAgeMin = 10): array {
+        $cutoff = date('Y-m-d H:i:s', strtotime($now) - $maxAgeMin * 60);
+        return Capsule::table('mod_diskmonitor_cache')
+            ->where('server_id', $serverId)
+            ->where('source', 'agent')
+            ->where('updated_at', '>=', $cutoff)
+            ->get()->map(function ($r) {
+                return (array) $r;
+            })->all();
+    }
+
     public function openEvent(int $serverId, string $user, string $domain, string $level, string $now): int {
         return (int) Capsule::table('mod_diskmonitor_events')->insertGetId(['server_id' => $serverId, 'user' => $user, 'domain' => $domain, 'level' => $level, 'status' => 'open', 'first_seen' => $now, 'last_seen' => $now]);
     }
