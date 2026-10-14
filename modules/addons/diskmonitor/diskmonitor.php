@@ -137,24 +137,11 @@ function diskmonitor_output($vars) {
                 'email_template' => \WHMCS\Database\Capsule::table('tbladdonmodules')->where('module', 'diskmonitor')->where('setting', 'email_template')->value('value'),
             ]);
             if ($action === 'sendtest') {
-                $adminEmail = '';
-                $adminId = isset($_SESSION['adminid']) ? (int) $_SESSION['adminid'] : 0;
-                if ($adminId > 0) {
-                    $adminEmail = (string) \WHMCS\Database\Capsule::table('tbladmins')->where('id', $adminId)->value('email');
-                }
-                if ($adminEmail === '') {
-                    $adminEmail = (string) \WHMCS\Database\Capsule::table('tblconfiguration')->where('setting', 'Email')->value('value');
-                }
-                $clientId = (int) \WHMCS\Database\Capsule::table('tblclients')->orderBy('id', 'asc')->value('id');
-                if ($adminEmail === '' || $clientId <= 0) {
-                    $notice = '<div class="errorbox">Send Test gagal: email admin atau data klien tidak ditemukan.</div>';
+                $r = localAPI('SendAdminEmail', ['type' => 'system', 'customsubject' => 'Disk Monitor Test', 'custommessage' => '<p>Test template: Disk Usage Warning - client Test, domain test.example.com, pct 85.0, diskused 850.0, quota 1000.0, cpanel https://test.example.com:2083.</p>', 'mergefields' => ['client_name' => 'Test', 'domain' => 'test.example.com', 'pct' => '85.0', 'diskused' => '850.0', 'quota' => '1000.0', 'cpanel_url' => 'https://test.example.com:2083']], 'admin');
+                if (isset($r['result']) && $r['result'] === 'success') {
+                    $notice = '<div class="successbox">Test email terkirim ke ' . htmlspecialchars('admin') . '.</div>';
                 } else {
-                    $r = localAPI('SendEmail', ['messagename' => $settings['email_template'], 'id' => $clientId, 'email' => $adminEmail, 'customvars' => ['client_name' => 'Test', 'domain' => 'test.example.com', 'pct' => '85.0', 'diskused' => '850.0', 'quota' => '1000.0', 'cpanel_url' => 'https://test.example.com:2083']], 'admin');
-                    if (isset($r['result']) && $r['result'] === 'success') {
-                        $notice = '<div class="successbox">Test email terkirim ke ' . htmlspecialchars($adminEmail) . '.</div>';
-                    } else {
-                        $notice = '<div class="errorbox">Send Test gagal: ' . htmlspecialchars(substr((string) ($r['message'] ?? 'unknown error'), 0, 300)) . '</div>';
-                    }
+                    $notice = '<div class="errorbox">Send Test gagal: ' . htmlspecialchars(substr((string) ($r['message'] ?? 'unknown error'), 0, 300)) . '</div>';
                 }
             } else {
                 $now = date('Y-m-d H:i:s');
@@ -210,7 +197,7 @@ function diskmonitor_output($vars) {
     echo '<h2>' . htmlspecialchars($title) . '</h2>';
     echo '<p><a href="' . htmlspecialchars($modulelink) . '&action=checknow' . htmlspecialchars($tokenQs) . '" class="btn btn-primary">' . htmlspecialchars($checknow) . '</a> ';
     echo '<a href="' . htmlspecialchars($modulelink) . '&action=sendtest' . htmlspecialchars($tokenQs) . '" class="btn btn-default">' . htmlspecialchars($sendtest) . '</a></p>';
-    echo '<p>Server OK: ' . (int) $summary['servers_ok'] . ' | Gagal: ' . (int) $summary['servers_failed'] . ' | Email 24 jam: ' . (int) $summary['emails_sent'] . '</p>';
+    echo '<p>Server OK: ' . (int) $summary['servers_ok'] . ' | Gagal: ' . (int) $summary['servers_failed'] . ' | Email 24 jam: ' . (int) $summary['emails_sent_24h'] . '</p>';
     echo '<table class="datatable" width="100%"><tr><th>Server</th><th>User</th><th>Domain</th><th>%</th><th>Level</th><th>Status</th><th>Terakhir kirim</th></tr>';
     foreach ($events as $e) {
         echo '<tr><td>' . htmlspecialchars((string) $e['server_id']) . '</td><td>' . htmlspecialchars((string) $e['user']) . '</td><td>' . htmlspecialchars((string) $e['domain']) . '</td><td>' . htmlspecialchars((string) ($e['pct'] ?? '')) . '</td><td>' . htmlspecialchars((string) $e['level']) . '</td><td>' . htmlspecialchars((string) $e['status']) . '</td><td>' . htmlspecialchars((string) ($e['last_sent_at'] ?? '')) . '</td></tr>';

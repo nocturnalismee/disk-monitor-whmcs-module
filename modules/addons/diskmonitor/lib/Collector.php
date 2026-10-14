@@ -2,6 +2,7 @@
 namespace DiskMonitor;
 
 class Collector {
+    const MAX_SUMMARY_FALLBACK = 50;
     public static function normalize(array $rawAcct): array {
         $user = (string) ($rawAcct['user'] ?? '');
         $domain = (string) ($rawAcct['domain'] ?? '');
@@ -21,9 +22,11 @@ class Collector {
 
     public static function pollServer(array $server, WhmClient $client): array {
         $out = [];
+        $fallbackCount = 0;
         foreach ($client->listAccounts() as $acct) {
             $row = self::normalize(is_array($acct) ? $acct : []);
-            if (($row['unlimited'] || $row['pct'] === null) && $row['user'] !== '') {
+            if (($row['unlimited'] || $row['pct'] === null) && $row['user'] !== '' && $fallbackCount < self::MAX_SUMMARY_FALLBACK) {
+                $fallbackCount++;
                 $fb = self::fallbackViaAccountSummary($client, $row['user']);
                 if ($fb !== null) {
                     $row = $fb;

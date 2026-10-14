@@ -20,12 +20,14 @@ class Runner {
                 continue;
             }
             foreach ($accounts as $acct) {
+                $src = !empty($acct['_agent_cached']) ? 'agent' : 'api';
+                unset($acct['_agent_cached']);
                 if (!empty($acct['unlimited']) || $acct['pct'] === null) {
-                    $db->upsertCache($acct, 'api', $now);
+                    $db->upsertCache($acct, $src, $now);
                     continue;
                 }
                 $level = Rules::evaluate((float) $acct['pct'], !empty($acct['over_quota']), $warn, $crit);
-                $db->upsertCache($acct, 'api', $now);
+                $db->upsertCache($acct, $src, $now);
                 if ($level === 'none') {
                     if ((float) $acct['pct'] < $reso) {
                         $db->resolveEvent((int) $server['id'], (string) $acct['user'], $now);
@@ -109,6 +111,7 @@ class Runner {
             'unlimited' => $unlimited,
             'over_quota' => !$unlimited && $used >= $quota,
             'server_id' => $serverId,
+            '_agent_cached' => true,
         ];
     }
 }

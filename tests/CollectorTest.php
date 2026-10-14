@@ -5,6 +5,7 @@ use DiskMonitor\WhmClient;
 
 final class PagedWhmClient extends WhmClient {
     public $calls = [];
+    public $summaryCalls = 0;
     private $pages;
     private $summary;
     public function __construct(array $pages, array $summary = []) {
@@ -22,6 +23,7 @@ final class PagedWhmClient extends WhmClient {
         return [];
     }
     public function accountSummary(string $user): array {
+        $this->summaryCalls++;
         return $this->summary;
     }
 }
@@ -72,5 +74,19 @@ final class CollectorTest extends TestCase {
         $this->assertCount(1, $rows);
         $this->assertTrue($rows[0]['unlimited']);
         $this->assertNull($rows[0]['pct']);
+    }
+
+    public function testPollServerCapsSummaryFallback(): void {
+        $rows = [];
+        for ($i = 0; $i < 60; $i++) {
+            $rows[] = ['user' => 'u' . $i, 'domain' => 'u' . $i . '.com', 'diskused' => '500M', 'disklimit' => 'unlimited'];
+        }
+        $client = new PagedWhmClient($rows);
+        $out = Collector::pollServer(['id' => 1], $client);
+        $this->assertCount(60, $out);
+        $this->assertSame(50, $client->summaryCalls);
+        foreach ($out as $r) {
+            $this->assertTrue($r['unlimited']);
+        }
     }
 }

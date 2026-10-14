@@ -185,6 +185,11 @@ final class RunnerTest extends TestCase {
         $this->assertCount(1, $sent);
         $this->assertSame(11, $sent[0][0]);
         $this->assertSame(1, $summary['events_open']);
+        // F5: agent-cache rows must be upserted with source 'agent', not 'api'.
+        $this->assertCount(1, $db->cache);
+        foreach ($db->cache as $entry) {
+            $this->assertSame('agent', $entry[1]);
+        }
     }
 
     public function testStaleAgentCacheFallsBackToPoll(): void {
