@@ -3,7 +3,7 @@
 - **Tanggal:** 2026-10-14
 - **Status:** Draft — menunggu review user
 - **Scope:** MVP — monitoring disk penuh akun cPanel + email otomatis ke pelanggan
-- **Stack:** PHP (native WHMCS Addon Module), MySQL/MariaDB (via Capsule), WHM API, WHMCS localAPI
+- **Stack:** PHP 7.4–8.x (sintaks kompatibel 7.4, tanpa sintaks khusus PHP 8), WHMCS 8.x–9.1 (Capsule, localAPI, Smarty), MySQL/MariaDB, WHM API
 - **Keputusan arsitektur:** Addon Module native WHMCS (bukan standalone app), dengan collector hybrid (WHM API poller + lightweight agent untuk server root)
 
 ---

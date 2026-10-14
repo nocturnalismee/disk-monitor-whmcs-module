@@ -6,12 +6,13 @@
 
 **Architecture:** WHMCS addon in `modules/addons/diskmonitor/` reuses `tblservers` credentials (no new WHM tokens). A 15-min sys cron polls WHM API per enabled server (fallback: lightweight `agent.php` push on root servers), pure-logic classes (`Rules`, `QuotaParser`, `Resolver`, `Notifier` decider) stay framework-free so they are PHPUnit-testable, and only thin wrappers touch Capsule/localAPI.
 
-**Tech Stack:** PHP >= 7.4, WHMCS 8.x (Capsule, localAPI `SendEmail`, Smarty `.tpl`), MySQL/MariaDB, PHPUnit 9 (dev only, pure classes), cURL for WHM API.
+**Tech Stack:** PHP 7.4–8.x (kode harus sintaks-kompatibel PHP 7.4: tanpa `match`, enum, `readonly`, named args, `str_contains`), WHMCS 8.x–9.1 (hanya API stabil: Capsule query builder, `localAPI('SendEmail')`, `add_hook('DailyCronJob')`, Smarty `.tpl`), MySQL/MariaDB, PHPUnit 9.6 (dev only, jalan di PHP 7.4+), cURL untuk WHM API.
 
 **Spec:** `docs/superpowers/specs/2026-10-14-diskmonitor-design.md`
 
 ## Global Constraints
 
+- Platform: PHP 7.4–8.x, WHMCS 8.x–9.1. Semua kode modul harus lolos `php -l` di PHP 7.4 dan tanpa deprecation di PHP 8.1+ (cast ke string sebelum `strtolower`, tanpa passing `null` ke parameter non-nullable).
 - Thresholds: `warn_pct=85`, `crit_pct=95`, `cooldown_h=24`, `resolve_below=80` (settings-overridable, validated `0 < warn < crit ≤ 100`).
 - Custom tables: `mod_diskmonitor_cache` (PK `server_id,user`), `mod_diskmonitor_events`, `mod_diskmonitor_log` — exact schemas per spec §6.
 - Email only via `localAPI('SendEmail', ['messagename' => <template>, 'id' => <userid>, 'customvars' => [...]])`; template name default `Disk Usage Warning`.
